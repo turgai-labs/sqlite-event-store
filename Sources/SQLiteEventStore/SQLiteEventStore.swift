@@ -8,8 +8,8 @@ import Foundation
 #endif
 
 /// An SQLite-backed event journal: one append-only table in one database file, with each
-/// `(persistence_id, sequence_number)` stored once, every event at the next `ordering`, which is
-/// its offset, and its tags indexed beside it.
+/// `(persistence_id, sequence_number)` stored once, as its primary key, every event at the next
+/// `ordering`, which is its offset, and its tags indexed beside it.
 public actor SQLiteEventStore: EventStore {
 
   public typealias PersistenceID = String
@@ -26,21 +26,22 @@ public actor SQLiteEventStore: EventStore {
     self.connection = connection
   }
 
-  /// Persists an event for a given `PersistenceID`, with its tags, in one `INSERT`: a trigger
-  /// indexes the tags in the same write, so an event is never kept without them. SQLite has one
-  /// writer at a time, so a later event never gets a lower offset.
+  /// Persists an event for a given `PersistenceID`, with its tags, in one `INSERT`: it takes the
+  /// journal's next ordering, and a trigger indexes the tags in the same write, so an event is
+  /// never kept without them. SQLite takes its one write lock when the `INSERT` starts, so the
+  /// highest ordering it reads is the last one kept, and a later event never gets a lower offset.
   ///
   /// A write is never retried or merged: any event already stored at
   /// `(id, sequenceNumber)` — identical or not — fails with the raw
-  /// `SQLiteError` (`constraintUniqueFailed`). The journal stays dumb on
+  /// `SQLiteError` (`constraintPrimaryKeyFailed`). The journal stays dumb on
   /// purpose (let-it-crash); whether a write actually landed is resolved by
   /// replaying the journal on entity recovery, not by SQL-level idempotency.
   public func persistEvent<Event>(_ event: Event, id: String, sequenceNumber: Int64, tags: Set<EventTag>) async throws
   where Event: Decodable, Event: Encodable, Event: Sendable {
     try await self.connection.query(
       """
-      INSERT INTO journal (persistence_id, sequence_number, event, tags)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO journal (ordering, persistence_id, sequence_number, event, tags)
+      VALUES ((SELECT COALESCE(MAX(ordering), 0) + 1 FROM journal), ?, ?, ?, ?)
       """,
       [
         .text(id), .integer(SQLiteInt64(sequenceNumber)), .text(try JSONText.encode(event)),
@@ -72,14 +73,14 @@ public actor SQLiteEventStore: EventStore {
     for statement in [
       """
       CREATE TABLE IF NOT EXISTS journal (
-          ordering        INTEGER PRIMARY KEY AUTOINCREMENT,
+          ordering        INTEGER NOT NULL UNIQUE,
           persistence_id  TEXT    NOT NULL,
           sequence_number INTEGER NOT NULL,
           event           TEXT    NOT NULL,
           tags            TEXT    NOT NULL DEFAULT '[]',
           created_at      TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE (persistence_id, sequence_number)
-      )
+          PRIMARY KEY (persistence_id, sequence_number)
+      ) WITHOUT ROWID
       """,
       // Every tag's events, by offset: what a read by tag scans.
       """
