@@ -77,12 +77,17 @@ Omit `snapshotFactory` when snapshots are not required.
 
 ## Event journal semantics
 
-`persistEvent(_:id:sequenceNumber:)` performs a plain SQL `INSERT`. The primary
-key is `(persistence_id, sequence_number)`, so every attempt to reuse a
-sequence number fails with `SQLiteError` reason `constraintPrimaryKeyFailed`,
+`persistEvent(_:id:sequenceNumber:tags:)` performs a plain SQL `INSERT`. Each
+event gets the next `ordering`, which is its `Offset`, and
+`(persistence_id, sequence_number)` is unique, so every attempt to reuse a
+sequence number fails with `SQLiteError` reason `constraintUniqueFailed`,
 even when the payload is identical. Writes are not retried, merged, or made
 idempotent by the store; the entity recovers uncertain write outcomes by
 replaying its journal.
+
+The event's tags are kept with it as JSON text, and a trigger indexes them in
+`journal_tags` in the same write, so an event is never kept without its tags.
+SQLite has one writer at a time, so a later event never gets a lower offset.
 
 `eventStream(id:fromSequenceNumber:)` reads events in ascending sequence order,
 a page at a time as they're consumed, so the complete journal is never in memory:
@@ -96,6 +101,16 @@ let stream: EventStream<OrderEvent> = try await eventStore.eventStream(
 for try await envelope in stream {
   print(envelope.sequenceNumber, envelope.event)
 }
+```
+
+`currentEventsByTag(_:after:)` reads every event with a tag after an offset,
+across entities, in offset order, a page at a time through the tags' index:
+
+```swift
+let stream: EventStream<OrderEvent> = try await eventStore.currentEventsByTag(
+  EventTag("order"),
+  after: lastOffset
+)
 ```
 
 Events are stored as JSON text using their `Codable` conformance, so the

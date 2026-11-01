@@ -104,7 +104,7 @@ struct SQLiteEventStoreTests {
     try await withDatabase { _, connection in
       let store = SQLiteEventStore(connection: connection)
       for sequenceNumber: Int64 in 1...3 {
-        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "test", sequenceNumber: sequenceNumber)
+        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "test", sequenceNumber: sequenceNumber, tags: [])
       }
 
       let events: [TestEvent] = try await store.eventsFor(id: "test")
@@ -117,7 +117,7 @@ struct SQLiteEventStoreTests {
     try await withDatabase { _, connection in
       let store = SQLiteEventStore(connection: connection)
       for sequenceNumber: Int64 in 1...3 {
-        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "test", sequenceNumber: sequenceNumber)
+        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "test", sequenceNumber: sequenceNumber, tags: [])
       }
 
       var envelopes: [EventEnvelope<TestEvent>] = []
@@ -137,14 +137,14 @@ struct SQLiteEventStoreTests {
     try await withDatabase { _, connection in
       let store = SQLiteEventStore(connection: connection)
       let event = TestEvent(value: "event-1")
-      try await store.persistEvent(event, id: "test", sequenceNumber: 1)
+      try await store.persistEvent(event, id: "test", sequenceNumber: 1, tags: [])
 
       // Let-it-crash: even an identical rewrite is a conflict — idempotency
       // is resolved by journal replay on recovery, not by the store.
       let error = await #expect(throws: SQLiteError.self) {
-        try await store.persistEvent(event, id: "test", sequenceNumber: 1)
+        try await store.persistEvent(event, id: "test", sequenceNumber: 1, tags: [])
       }
-      #expect(error?.reason == .constraintPrimaryKeyFailed)
+      #expect(error?.reason == .constraintUniqueFailed)
 
       let events: [TestEvent] = try await store.eventsFor(id: "test")
       #expect(events == [event])
@@ -155,12 +155,12 @@ struct SQLiteEventStoreTests {
   func conflictingPersist() async throws {
     try await withDatabase { _, connection in
       let store = SQLiteEventStore(connection: connection)
-      try await store.persistEvent(TestEvent(value: "original"), id: "test", sequenceNumber: 1)
+      try await store.persistEvent(TestEvent(value: "original"), id: "test", sequenceNumber: 1, tags: [])
 
       let error = await #expect(throws: SQLiteError.self) {
-        try await store.persistEvent(TestEvent(value: "different"), id: "test", sequenceNumber: 1)
+        try await store.persistEvent(TestEvent(value: "different"), id: "test", sequenceNumber: 1, tags: [])
       }
-      #expect(error?.reason == .constraintPrimaryKeyFailed)
+      #expect(error?.reason == .constraintUniqueFailed)
 
       let events: [TestEvent] = try await store.eventsFor(id: "test")
       #expect(events == [TestEvent(value: "original")])
@@ -173,10 +173,10 @@ struct SQLiteEventStoreTests {
       let store = SQLiteEventStore(connection: connection)
       let count = Int64(SQLiteEventStore.pageSize * 2 + 10)
       for sequenceNumber: Int64 in 1...count {
-        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "long", sequenceNumber: sequenceNumber)
+        try await store.persistEvent(TestEvent(value: "event-\(sequenceNumber)"), id: "long", sequenceNumber: sequenceNumber, tags: [])
       }
       // Another journal's events, interleaved by key, are never read as this one's.
-      try await store.persistEvent(TestEvent(value: "other"), id: "lone", sequenceNumber: 1)
+      try await store.persistEvent(TestEvent(value: "other"), id: "lone", sequenceNumber: 1, tags: [])
 
       var sequenceNumbers: [Int64] = []
       let stream: EventStream<TestEvent> = try await store.eventStream(id: "long", fromSequenceNumber: 3)
@@ -187,10 +187,71 @@ struct SQLiteEventStoreTests {
     }
   }
 
+  @Test("Every event with a tag reads back after an offset, across entities, in the order kept")
+  func eventsByTag() async throws {
+    try await withDatabase { _, connection in
+      let store = SQLiteEventStore(connection: connection)
+      let tag = EventTag("test")
+      try await store.persistEvent(TestEvent(value: "one"), id: "a", sequenceNumber: 1, tags: [tag])
+      try await store.persistEvent(TestEvent(value: "untagged"), id: "b", sequenceNumber: 1, tags: [])
+      try await store.persistEvent(TestEvent(value: "two"), id: "b", sequenceNumber: 2, tags: [tag, EventTag("other")])
+      try await store.persistEvent(TestEvent(value: "three"), id: "a", sequenceNumber: 2, tags: [tag])
+
+      let tagged = try await Self.read(tag, after: .start, in: store)
+      #expect(tagged.map(\.event.value) == ["one", "two", "three"])
+      #expect(tagged.map(\.persistenceID) == ["a", "b", "a"])
+      #expect(tagged.map(\.sequenceNumber) == [1, 2, 2])
+      #expect(tagged.map(\.offset) == tagged.map(\.offset).sorted())
+
+      let rest = try await Self.read(tag, after: tagged[0].offset, in: store)
+      #expect(rest.map(\.event.value) == ["two", "three"])
+      #expect(try await Self.read(EventTag("other"), after: .start, in: store).map(\.event.value) == ["two"])
+      #expect(try await Self.read(EventTag("none"), after: .start, in: store).isEmpty)
+
+      // A replay's envelopes carry the same offsets.
+      var replayed: [Offset] = []
+      let stream: EventStream<TestEvent> = try await store.eventStream(id: "a", fromSequenceNumber: 1)
+      for try await envelope in stream { replayed.append(envelope.offset) }
+      #expect(replayed == [tagged[0].offset, tagged[2].offset])
+    }
+  }
+
+  @Test("A read by tag longer than a page reads every event, in order")
+  func eventsByTagAcrossPages() async throws {
+    try await withDatabase { _, connection in
+      let store = SQLiteEventStore(connection: connection)
+      let tag = EventTag("long")
+      let count = Int64(SQLiteEventStore.pageSize * 2 + 10)
+      for sequenceNumber: Int64 in 1...count {
+        try await store.persistEvent(
+          TestEvent(value: "event-\(sequenceNumber)"), id: "long", sequenceNumber: sequenceNumber, tags: [tag])
+        try await store.persistEvent(
+          TestEvent(value: "other-\(sequenceNumber)"), id: "other", sequenceNumber: sequenceNumber, tags: [])
+      }
+
+      let tagged = try await Self.read(tag, after: .start, in: store)
+      #expect(tagged.map(\.sequenceNumber) == Array(1...count))
+    }
+  }
+
+  /// The test events tagged `tag` after `offset`, read whole.
+  private static func read(
+    _ tag: EventTag,
+    after offset: Offset,
+    in store: SQLiteEventStore
+  ) async throws -> [EventEnvelope<TestEvent>] {
+    let events: EventStream<TestEvent> = try await store.currentEventsByTag(tag, after: offset)
+    var envelopes: [EventEnvelope<TestEvent>] = []
+    for try await envelope in events {
+      envelopes.append(envelope)
+    }
+    return envelopes
+  }
+
   @Test("What's written survives closing and opening the database again")
   func survivesReopening() async throws {
     try await withDatabase { path, connection in
-      try await SQLiteEventStore(connection: connection).persistEvent(TestEvent(value: "kept"), id: "test", sequenceNumber: 1)
+      try await SQLiteEventStore(connection: connection).persistEvent(TestEvent(value: "kept"), id: "test", sequenceNumber: 1, tags: [])
 
       let reopened = try await SQLiteConnection.open(storage: .file(path: path))
       let store = SQLiteEventStore(connection: reopened)
@@ -211,8 +272,8 @@ struct SQLiteEventStoreTests {
       let second = SQLiteEventStore(connection: other)
       try await second.setupDatabase()
 
-      try await first.persistEvent(TestEvent(value: "from-first"), id: "a", sequenceNumber: 1)
-      try await second.persistEvent(TestEvent(value: "from-second"), id: "b", sequenceNumber: 1)
+      try await first.persistEvent(TestEvent(value: "from-first"), id: "a", sequenceNumber: 1, tags: [])
+      try await second.persistEvent(TestEvent(value: "from-second"), id: "b", sequenceNumber: 1, tags: [])
 
       let readBySecond: [TestEvent] = try await second.eventsFor(id: "a")
       let readByFirst: [TestEvent] = try await first.eventsFor(id: "b")
