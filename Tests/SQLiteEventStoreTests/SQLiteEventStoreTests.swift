@@ -144,7 +144,7 @@ struct SQLiteEventStoreTests {
       let error = await #expect(throws: SQLiteError.self) {
         try await store.persistEvent(event, id: "test", sequenceNumber: 1, tags: [])
       }
-      #expect(error?.reason == .constraintUniqueFailed)
+      #expect(error?.reason == .constraintPrimaryKeyFailed)
 
       let events: [TestEvent] = try await store.eventsFor(id: "test")
       #expect(events == [event])
@@ -160,7 +160,7 @@ struct SQLiteEventStoreTests {
       let error = await #expect(throws: SQLiteError.self) {
         try await store.persistEvent(TestEvent(value: "different"), id: "test", sequenceNumber: 1, tags: [])
       }
-      #expect(error?.reason == .constraintUniqueFailed)
+      #expect(error?.reason == .constraintPrimaryKeyFailed)
 
       let events: [TestEvent] = try await store.eventsFor(id: "test")
       #expect(events == [TestEvent(value: "original")])
