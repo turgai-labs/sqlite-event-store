@@ -1,5 +1,5 @@
-import EventSourcing
-import SQLiteNIO
+public import EventSourcing
+public import SQLiteNIO
 
 /// SQLite-backed snapshot storage, separate from the event journal in the
 /// same way Akka configures journal and snapshot-store plugins independently.
