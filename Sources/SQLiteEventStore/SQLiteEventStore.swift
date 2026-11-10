@@ -1,5 +1,5 @@
-import EventSourcing
-import SQLiteNIO
+public import EventSourcing
+public import SQLiteNIO
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
