@@ -89,7 +89,7 @@ struct SQLiteEventStoreTests {
   func undecodableSnapshot() async throws {
     try await withDatabase { _, connection in
       let store = SQLiteSnapshotStore(connection: connection)
-      try await connection.query(
+      _ = try await connection.query(
         "INSERT INTO snapshots (persistence_id, sequence_number, state) VALUES (?, 1, ?)",
         [.text("snapshot-decode-test"), .text(#"{"unexpected":true}"#)]
       )
@@ -224,9 +224,17 @@ struct SQLiteEventStoreTests {
       let count = Int64(SQLiteEventStore.pageSize * 2 + 10)
       for sequenceNumber: Int64 in 1...count {
         try await store.persistEvent(
-          TestEvent(value: "event-\(sequenceNumber)"), id: "long", sequenceNumber: sequenceNumber, tags: [tag])
+          TestEvent(value: "event-\(sequenceNumber)"),
+          id: "long",
+          sequenceNumber: sequenceNumber,
+          tags: [tag]
+        )
         try await store.persistEvent(
-          TestEvent(value: "other-\(sequenceNumber)"), id: "other", sequenceNumber: sequenceNumber, tags: [])
+          TestEvent(value: "other-\(sequenceNumber)"),
+          id: "other",
+          sequenceNumber: sequenceNumber,
+          tags: []
+        )
       }
 
       let tagged = try await Self.read(tag, after: .start, in: store)
