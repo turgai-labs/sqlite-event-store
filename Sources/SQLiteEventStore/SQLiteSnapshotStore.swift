@@ -18,7 +18,7 @@ public actor SQLiteSnapshotStore: SnapshotStore {
     id: PersistenceID,
     coveredSequenceNumber: Int64
   ) async throws {
-    try await self.connection.query(
+    _ = try await self.connection.query(
       """
       INSERT INTO snapshots (persistence_id, sequence_number, state)
       VALUES (?, ?, ?)
@@ -61,7 +61,7 @@ public actor SQLiteSnapshotStore: SnapshotStore {
   ) async throws {
     switch (criteria.minSequenceNumber, criteria.maxSequenceNumber) {
     case (.some(let minimum), .some(let maximum)):
-      try await self.connection.query(
+      _ = try await self.connection.query(
         """
         DELETE FROM snapshots
         WHERE persistence_id = ?
@@ -71,24 +71,24 @@ public actor SQLiteSnapshotStore: SnapshotStore {
         [.text(id), .integer(SQLiteInt64(minimum)), .integer(SQLiteInt64(maximum))]
       )
     case (.some(let minimum), .none):
-      try await self.connection.query(
+      _ = try await self.connection.query(
         "DELETE FROM snapshots WHERE persistence_id = ? AND sequence_number >= ?",
         [.text(id), .integer(SQLiteInt64(minimum))]
       )
     case (.none, .some(let maximum)):
-      try await self.connection.query(
+      _ = try await self.connection.query(
         "DELETE FROM snapshots WHERE persistence_id = ? AND sequence_number <= ?",
         [.text(id), .integer(SQLiteInt64(maximum))]
       )
     case (.none, .none):
-      try await self.connection.query("DELETE FROM snapshots WHERE persistence_id = ?", [.text(id)])
+      _ = try await self.connection.query("DELETE FROM snapshots WHERE persistence_id = ?", [.text(id)])
     }
   }
 
   /// Sets the connection up and creates the snapshots table, if it isn't there yet.
   public func setupDatabase() async throws {
     try await JournalDatabase.configure(self.connection)
-    try await self.connection.query(
+    _ = try await self.connection.query(
       """
       CREATE TABLE IF NOT EXISTS snapshots (
         persistence_id  TEXT    NOT NULL PRIMARY KEY,

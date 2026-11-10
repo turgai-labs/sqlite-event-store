@@ -38,7 +38,7 @@ public actor SQLiteEventStore: EventStore {
   /// replaying the journal on entity recovery, not by SQL-level idempotency.
   public func persistEvent<Event>(_ event: Event, id: String, sequenceNumber: Int64, tags: Set<EventTag>) async throws
   where Event: Decodable, Event: Encodable, Event: Sendable {
-    try await self.connection.query(
+    _ = try await self.connection.query(
       """
       INSERT INTO journal (ordering, persistence_id, sequence_number, event, tags)
       VALUES ((SELECT COALESCE(MAX(ordering), 0) + 1 FROM journal), ?, ?, ?, ?)
@@ -99,7 +99,7 @@ public actor SQLiteEventStore: EventStore {
       END
       """,
     ] {
-      try await self.connection.query(statement)
+      _ = try await self.connection.query(statement)
     }
   }
 }
